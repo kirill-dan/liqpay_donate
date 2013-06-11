@@ -1,0 +1,502 @@
+<?php
+
+/**
+ * Module for create donation via payment system LiqPay
+ * Developer: Danilevsky Kirill k.danilevsky@gmail.com
+ * ITProstor.com company
+ *  
+ */
+
+/**
+ * Implementation of hook_help.
+ * 
+ */
+function liqpay_donate_help($patch, $arg) {
+  switch ($patch) {
+    case 'admin/help#donate' :
+      return t('Module for create donation via payment system LiqPay');
+      break;
+  }
+}
+
+/**
+ * Implementation of hook_menu.
+ * 
+ */
+function liqpay_donate_menu() {
+  $items = array();
+  // Adding new item in admin menu (settings payment system).
+  $items['admin/config/donate'] = array(
+    'title' => t('Donate settings'),
+    'description' => t('Edit donate settings'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('liqpay_donate_admin_form'),
+    'access arguments' => array('access administration pages'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+  // Adding new item to admin menu (reports donation).
+  $items['admin/reports/donate_report'] = array(
+    'title' => t('Donate report'),
+    'description' => t('View donate report'),
+    'page callback' => 'liqpay_donate_admin_report',
+    'page arguments' => array(),
+    'access arguments' => array('access administration pages'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+  // Processing a request for LigPay.
+  $items['liqpay/%/%/%'] = array(
+    'title' => 'LiqPay',
+    'page callback' => 'liqpay_donate_liqpay',
+    'page arguments' => array(1, 2, 3),
+    'access arguments' => array('access content'),
+    'type' => MENU_CALLBACK,
+  );
+  // Processing a response from LigPay.
+  $items['callback_liqpay'] = array(
+    'title' => 'LiqPay',
+    'page callback' => 'liqpay_donate_callback_liqpay',
+    'page arguments' => array(),
+    'access arguments' => array('access content'),
+    'type' => MENU_CALLBACK,
+  );
+  // The output thanks for the donation.
+  $items['thanks'] = array(
+    'title' => t('Thanks'),
+    'page callback' => 'liqpay_donate_thanks',
+    'page arguments' => array(),
+    'access arguments' => array('access content'),
+    'type' => MENU_CALLBACK,
+  );
+  return $items;
+}
+
+/**
+ * Processing a response from LigPay.
+ * 
+ */
+function liqpay_donate_callback_liqpay() {
+  if (isset($_POST['operation_xml']) AND isset($_POST['signature'])) {
+    // Get XML file.  
+    $xml = base64_decode($_POST['operation_xml']);
+    $data = new SimpleXMLElement($xml);
+    // Parsing data.  
+    $amount = $data->amount;
+    $currency = $data->currency;
+    if ($data->status == 'success') {
+      // Change status payment in DB.
+      db_update('donate_people')
+          ->fields(array('status' => 'Paid'))
+          ->condition('idpe', $data->order_id)
+          ->execute();
+    }
+  }
+  return '';
+}
+
+/**
+ * Output page thanks.
+ * 
+ */
+function liqpay_donate_thanks() {
+  // Get text thanks from DB.
+  $query = db_select('donate_text_thanks', 't')
+      ->fields('t', array('text_thanks'))
+      ->condition('idt', 1)
+      ->execute()
+      ->fetchField();
+  return $query;
+}
+
+/**
+ * Processing a request for LiqPay.
+ * 
+ */
+function liqpay_donate_liqpay($xml_encoded, $signature, $site_url) {
+  // Get data from URL.
+  $xml_encoded = rawurldecode($xml_encoded);
+  $site_url = rawurldecode($site_url);
+  $signature = rawurldecode($signature);
+  // Create html form for send POST request.
+  $form = '<form id="form_post" action="' . $site_url . '" method="POST" name="liqpayform"/>
+                  <input type="hidden" id="operation_xml" name="operation_xml" value="' . $xml_encoded . '" />
+                  <input type="hidden" name="signature" value="' . $signature . '" />
+                </form>';
+  print $form;
+  // Send form.
+  print '<script>document.liqpayform.submit();</script>';
+  return '';
+}
+
+/**
+ * Implementation of hook_block_info.
+ * 
+ */
+function liqpay_donate_block_info() {
+  $blocks['donate'] = array(
+    'info' => t('Donate form'),
+    'cache' => DRUPAL_NO_CACHE,
+  );
+  return $blocks;
+}
+
+/**
+ * Implementation of hook_block_view.
+ * 
+ */
+function liqpay_donate_block_view($delta = '') {
+  $block = array();
+  switch ($delta) {
+    case 'donate':
+      // Find out if active payment system.
+      $payment = db_select('donate_payment', 'p')
+          ->fields('p', array('idp', 'name_system'))
+          ->condition('act', 1)
+          ->execute();
+      if ($payment) {
+        // Find all payment systems.
+        foreach ($payment as $value) {
+          $pay[] = $value;
+        }
+        // If active some payment system.
+        if (isset($pay)) {
+          $block['subject'] = t('Make a donation');
+          // Output form donation (sent to function all payment system which active).
+          $block['content'] = drupal_get_form('liqpay_donate_form_payment', $pay);
+        }
+        else {
+          return '';
+        }
+      }
+      break;
+  }
+  return $block;
+}
+
+/**
+ * Create page reports.
+ * 
+ */
+function liqpay_donate_admin_report() {
+  // Create title for table. 
+  $header = array(
+    array('data' => t('Name'), 'field' => 'name'),
+    array('data' => t('Amount UAH'), 'field' => 'amount'),
+    array('data' => t('Status'), 'field' => 'status'),
+    array('data' => t('Payment system'), 'field' => 'name_system'),
+    array('data' => t('E-mail'), 'field' => 'mail'),
+    array('data' => t('Phone'), 'field' => 'tel'),
+    array('data' => t('Date'), 'field' => 'date'),
+  );
+  // Get data on those who committed a donation.
+  $query = db_select('donate_people', 'pe')
+      ->fields('pe')
+      ->extend('PagerDefault')
+      ->limit(50)
+      ->extend('TableSort')
+      ->orderByHeader($header);
+  $query->leftJoin('donate_payment', 'p', 'pe.idp=p.idp');
+  $query->fields('p');
+  $result = $query->execute();
+  $rows = array();
+  // Collect to nodes.
+  foreach ($result as $node) {
+    $rows[] = array(
+      $node->name,
+      $node->amount,
+      $node->status,
+      $node->name_system,
+      $node->mail,
+      $node->tel,
+      format_date($node->date),
+    );
+  }
+  $title = '<div class="donation-title-report">' . t('List of those who made ​​a donation:') . '</div>';
+  $output = $title . theme('table', array('header' => $header, 'rows' => $rows));
+  $output .= theme('pager');
+  return $output;
+}
+
+/**
+ * Create payment form (in the block).
+ * 
+ * @param type $pay info of payment systems
+ * @return string
+ */
+function liqpay_donate_form_payment($form, &$form_state, $pay) {
+  $form['name'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Name'),
+    '#description' => t('Please enter your full name'),
+    '#default_value' => '',
+    '#size' => 25,
+    '#maxlength' => 50,
+    '#required' => TRUE,
+    '#prefix' => '<div class="block-donate-form-name">',
+    '#suffix' => '</div>',
+  );
+  $form['tel'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Phone'),
+    '#description' => t('Please enter your phone'),
+    '#default_value' => '',
+    '#size' => 25,
+    '#maxlength' => 30,
+    '#required' => FALSE,
+    '#prefix' => '<div class="block-donate-form-tel">',
+    '#suffix' => '</div>',
+  );
+  $form['email'] = array(
+    '#type' => 'textfield',
+    '#title' => t('E-mail'),
+    '#description' => t('Please enter your e-mail'),
+    '#default_value' => '',
+    '#size' => 25,
+    '#maxlength' => 30,
+    '#required' => TRUE,
+    '#prefix' => '<div class="block-donate-form-email">',
+    '#suffix' => '</div>',
+  );
+  $form['amount'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Amount donation UAH'),
+    '#description' => t('Please enter amount donation'),
+    '#size' => 25,
+    '#maxlength' => 7,
+    '#required' => TRUE,
+    '#prefix' => '<div class="block-donate-form-amount">',
+    '#suffix' => '</div>',
+  );
+  // Create select list payment systems.
+  foreach ($pay as $value) {
+    $options[$value->idp] = $value->name_system;
+  }
+  $form['pay'] = array(
+    '#type' => 'select',
+    '#title' => t('Payment system'),
+    '#options' => $options,
+    '#description' => t('Please select payment system'),
+    '#prefix' => '<div class="block-donate-form-pay">',
+    '#suffix' => '</div>',
+  );
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Donate'),
+    '#submit' => array('liqpay_donate_form_payment_submit'),
+    '#prefix' => '<div class="block-donate-form-submit">',
+    '#suffix' => '</div>',
+  );
+  return $form;
+}
+
+/**
+ * Check entered data (form in block).
+ * 
+ */
+function liqpay_donate_form_payment_validate($form, &$form_state) {
+  // Check the e-mail.
+  $email = $form_state['values']['email'];
+  if (!preg_match("~^[_a-zA-Z0-9-]+[\.]*[_a-zA-Z0-9-]*@[a-zA-Z0-9-]+[\.]*[_a-zA-Z0-9-]*\.[a-z]{2,6}$~", $email)) {
+    form_set_error('email', t('E-mail is not correct!'));
+  }
+  // Check the amount if numeric.
+  if (!is_numeric($form_state['values']['amount'])) {
+    form_set_error('amount', t('Amount must be numeric!'));
+  }
+}
+
+/**
+ * Submit form action (form in block).
+ * 
+ */
+function liqpay_donate_form_payment_submit($form, &$form_state) {
+  $name = check_plain($form_state['values']['name']);
+  $tel = check_plain($form_state['values']['tel']);
+  $email = $form_state['values']['email'];
+  $amount = $form_state['values']['amount'];
+  $idp = $form_state['values']['pay'];
+  $date = time();
+  // Insert new data of man.
+  $id_people = db_insert('donate_people')
+      ->fields(array('name' => $name, 'tel' => $tel, 'mail' => $email, 'amount' => $amount,
+        'status' => 'Not paid', 'idp' => $idp, 'date' => $date))
+      ->execute();
+  // Find name payment system and send in the function with other data. 
+  $payment_system = db_select('donate_payment', 'p')
+      ->fields('p', array('name_system'))
+      ->condition('idp', $idp)
+      ->execute()
+      ->fetchField();
+  liqpay_donate_payment_action($idp, $payment_system, $id_people, $amount);
+}
+
+/**
+ * Processing data for all payment systems.
+ * 
+ * @param type $idp identificator payment system
+ * @param type $payment_system name payment system
+ * @param type $id_people identificator man in report table
+ * @param type $amount amount donation
+ */
+function liqpay_donate_payment_action($idp, $payment_system, $id_people, $amount) {
+  // Here you must specify all payment systems and action with them.
+  switch ($payment_system) {
+    case 'LiqPay':
+      $query = db_select('donate_payment', 'p')
+          ->fields('p', array('sign', 'merch_id', 'site_url'))
+          ->condition('idp', $idp)
+          ->execute();
+      foreach ($query as $value) {
+        $sign = $value->sign;
+        $merch_id = $value->merch_id;
+        $site_url = $value->site_url;
+      }
+      $thanks_url = 'http://' . getenv('HTTP_HOST') . '/thanks';
+      $callback_url = 'http://' . getenv('HTTP_HOST') . '/callback_liqpay';
+      // Create xml for send LiqPay server.
+      $request_xml = new SimpleXMLElement("<request></request>");
+      $request_xml_parameter = $request_xml->addChild('version', '1.2');
+      $request_xml_parameter = $request_xml->addChild('merchant_id', $merch_id);
+      $request_xml_parameter = $request_xml->addChild('result_url', $thanks_url);
+      $request_xml_parameter = $request_xml->addChild('server_url', $callback_url);
+      $request_xml_parameter = $request_xml->addChild('order_id', $id_people);
+      $request_xml_parameter = $request_xml->addChild('amount', $amount);
+      $request_xml_parameter = $request_xml->addChild('currency', 'UAH');
+      $request_xml_parameter = $request_xml->addChild('description', t('Donation'));
+      $request_xml_parameter = $request_xml->addChild('default_phone', '');
+      $request_xml_parameter = $request_xml->addChild('pay_way', 'card');
+      $request_xml_parameter = $request_xml->addChild('goods_id', '');
+      $xml = $request_xml->asXML();
+      // Generate signature.       
+      $xml_encoded = base64_encode($xml);
+      $signature = base64_encode(sha1($sign . $xml . $sign, 1));
+      // Send a request to a page where will process the data that will fit into a form and send to server.
+      drupal_goto('liqpay/' . rawurlencode($xml_encoded) . '/' . rawurlencode($signature) . '/' . rawurlencode($site_url));
+      break;
+  }
+}
+
+/**
+ * Create form configuration (donate settings).
+ * 
+ * @return string
+ */
+function liqpay_donate_admin_form($form, &$form_state) {
+  // Get values payment systems from DB.
+  $query = db_select('donate_payment', 'p')
+      ->fields('p', array('idp', 'name_system', 'title', 'sign', 'merch_id', 'site_url', 'act'))
+      ->execute();
+  foreach ($query as $value) {
+    // Adding to form vertical_tabs items. 
+    $form['vertical_tabs'] = array(
+      '#type' => 'vertical_tabs',
+    );
+    $form[$value->name_system] = array(
+      '#type' => 'fieldset',
+      '#title' => $value->name_system,
+      '#group' => 'vertical_tabs',
+    );
+    $form[$value->name_system]['idp'] = array(
+      '#type' => 'hidden',
+      '#value' => $value->idp,
+    );
+    $form[$value->name_system]['title'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Title'),
+      '#description' => t('Enter title payment system'),
+      '#default_value' => $value->title,
+      '#size' => 50,
+      '#maxlength' => 100,
+      '#required' => TRUE,
+    );
+    $form[$value->name_system]['sign'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Signature'),
+      '#description' => t('Enter signature payment system'),
+      '#default_value' => $value->sign,
+      '#size' => 50,
+      '#maxlength' => 50,
+    );
+    $form[$value->name_system]['merch'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Merchant_id'),
+      '#description' => t('Enter merchant_id payment system'),
+      '#default_value' => $value->merch_id,
+      '#size' => 50,
+      '#maxlength' => 50,
+    );
+    $form[$value->name_system]['site'] = array(
+      '#type' => 'textfield',
+      '#title' => t('Site URL'),
+      '#description' => t('Enter site URL payment system'),
+      '#default_value' => $value->site_url,
+      '#size' => 50,
+      '#maxlength' => 50,
+      '#required' => TRUE,
+    );
+    $form[$value->name_system]['activate'] = array(
+      '#type' => 'checkbox',
+      '#title' => t('Active'),
+      '#description' => t('Select status on or off payment system'),
+      '#default_value' => $value->act,
+    );
+  }
+  // Get thanks text from DB.
+  $thanks_text = db_select('donate_text_thanks', 't')
+      ->fields('t', array('text_thanks'))
+      ->condition('idt', 1)
+      ->execute()
+      ->fetchField();
+  $form['vertical_tabs_text'] = array(
+    '#type' => 'vertical_tabs',
+  );
+  $form['thanks_text'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Thanks text'),
+    '#group' => 'vertical_tabs_text',
+  );
+  $form['thanks_text']['text_thanks'] = array(
+    '#type' => 'text_format',
+    '#title' => t('Thanks text'),
+    '#description' => t('Enter the text gratitude, which will see man after the donation'),
+    '#default_value' => $thanks_text,
+    '#required' => TRUE,
+  );
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Save'),
+    '#submit' => array('liqpay_donate_admin_form_submit'),
+  );
+  return $form;
+}
+
+/**
+ * Submit form donate settings.
+ * 
+ */
+function liqpay_donate_admin_form_submit($form, &$form_state) {
+  // Insert to DB thanks text. 
+  $thanks_text = $form['vertical_tabs']['group']['#groups']['vertical_tabs_text'][0]['text_thanks']['value']['#value'];
+  db_update('donate_text_thanks')
+      ->fields(array(
+        'text_thanks' => $thanks_text
+      ))
+      ->condition('idt', 1)
+      ->execute();
+  // Foreach array payment systems.
+  foreach ($form['vertical_tabs']['group']['#groups']['vertical_tabs'] as $key => $value) {
+    // If the value is numeric there and stores data of payment systems.
+    if (is_numeric($key)) {
+      db_update('donate_payment')
+          ->fields(array(
+            'title' => $value['title']['#value'],
+            'sign' => $value['sign']['#value'],
+            'merch_id' => $value['merch']['#value'],
+            'site_url' => $value['site']['#value'],
+            'act' => $value['activate']['#value']
+          ))
+          ->condition('idp', $value['idp']['#value'])
+          ->execute();
+      drupal_set_message(t('Data is saving.'), 'status');
+    }
+  }
+}
