@@ -1,6 +1,6 @@
 name = LiqPay Donation
 description = Module for create a donation via payment system LiqPay. http://itprostor.com
 core = 7.x
-version = 1.0
+version = 7.x-1.1
 package = LiqPay Donation
 configure = "admin/config/donate"

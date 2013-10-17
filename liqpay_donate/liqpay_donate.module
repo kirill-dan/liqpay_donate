@@ -43,14 +43,6 @@ function liqpay_donate_menu() {
     'access arguments' => array('access administration pages'),
     'type' => MENU_NORMAL_ITEM,
   );
-  // Processing a request for LigPay.
-  $items['liqpay/%/%/%'] = array(
-    'title' => 'LiqPay',
-    'page callback' => 'liqpay_donate_liqpay',
-    'page arguments' => array(1, 2, 3),
-    'access arguments' => array('access content'),
-    'type' => MENU_CALLBACK,
-  );
   // Processing a response from LigPay.
   $items['callback_liqpay'] = array(
     'title' => 'LiqPay',
@@ -105,26 +97,6 @@ function liqpay_donate_thanks() {
       ->execute()
       ->fetchField();
   return $query;
-}
-
-/**
- * Processing a request for LiqPay.
- * 
- */
-function liqpay_donate_liqpay($xml_encoded, $signature, $site_url) {
-  // Get data from URL.
-  $xml_encoded = rawurldecode($xml_encoded);
-  $site_url = rawurldecode($site_url);
-  $signature = rawurldecode($signature);
-  // Create html form for send POST request.
-  $form = '<form id="form_post" action="' . $site_url . '" method="POST" name="liqpayform"/>
-                  <input type="hidden" id="operation_xml" name="operation_xml" value="' . $xml_encoded . '" />
-                  <input type="hidden" name="signature" value="' . $signature . '" />
-                </form>';
-  print $form;
-  // Send form.
-  print '<script>document.liqpayform.submit();</script>';
-  return '';
 }
 
 /**
@@ -369,8 +341,15 @@ function liqpay_donate_payment_action($idp, $payment_system, $id_people, $amount
       // Generate signature.       
       $xml_encoded = base64_encode($xml);
       $signature = base64_encode(sha1($sign . $xml . $sign, 1));
-      // Send a request to a page where will process the data that will fit into a form and send to server.
-      drupal_goto('liqpay/' . rawurlencode($xml_encoded) . '/' . rawurlencode($signature) . '/' . rawurlencode($site_url));
+      // Create html form for send POST request.
+      $form = '<form id="form_post" action="' . $site_url . '" method="POST" name="liqpayform"/>
+                  <input type="hidden" id="operation_xml" name="operation_xml" value="' . $xml_encoded . '" />
+                  <input type="hidden" name="signature" value="' . $signature . '" />
+                </form>';
+      print $form;
+      // Send form.
+      print '<script>document.liqpayform.submit();</script>';
+      drupal_exit();
       break;
   }
 }
